@@ -188,6 +188,8 @@ public:
 		/* fail because this method is not implemented */
 		return false;
 	}
+
+	virtual bool Signal(intptr_t sig = 0) {(void)sig; return false;}
 };
 
 #endif

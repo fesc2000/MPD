@@ -144,7 +144,9 @@ class AudioOutputControl {
 		DRAIN,
 
 		CANCEL,
-		KILL
+		KILL,
+
+		SIGNAL,
 	} command = Command::NONE;
 
 	/**
@@ -217,6 +219,11 @@ class AudioOutputControl {
 	 * playback.
 	 */
 	bool skip_delay;
+
+	/** 
+	 * The signal sent with Signal()
+	 */
+	intptr_t signal = 0;
 
 public:
 	/**
@@ -423,6 +430,11 @@ public:
 	 */
 	void LockAllowPlay() noexcept;
 
+	/**
+	 * Send an output specific signal
+	 */
+	void Signal(intptr_t info = 0) noexcept;
+
 private:
 	/**
 	 * An error has occurred and this output is defunct.
@@ -529,6 +541,9 @@ private:
 	 * Handles exceptions.
 	 */
 	void InternalDrain() noexcept;
+
+	bool InternalSignal(intptr_t info) noexcept;
+
 
 	/**
 	 * The OutputThread.

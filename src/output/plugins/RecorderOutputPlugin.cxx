@@ -30,6 +30,13 @@
 #include "fs/io/FileOutputStream.hxx"
 #include "util/Domain.hxx"
 #include "util/ScopeExit.hxx"
+#include "Partition.hxx"
+#include "Instance.hxx"
+#include "Main.hxx"
+
+#include "output/MultipleOutputs.hxx"
+#include "output/State.hxx"
+#include "output/Filtered.hxx"
 
 #include <stdexcept>
 #include <memory>
@@ -56,6 +63,8 @@ class RecorderOutput final : AudioOutput {
 	 * destination path.
 	 */
 	std::string format_path;
+
+	AllocatedPath archive_path = nullptr;
 
 	/**
 	 * The #AudioFormat that is currently active.  This is used
@@ -88,6 +97,7 @@ private:
 
 	size_t Play(const void *chunk, size_t size) override;
 
+	bool Signal (intptr_t info);
 private:
 	gcc_pure
 	bool HasDynamicPath() const noexcept {
@@ -103,6 +113,14 @@ private:
 
 	void FinishFormat();
 	void ReopenFormat(AllocatedPath &&new_path);
+
+	/* parent (true) recorder to send archive message to */
+	AudioOutputControl *parent;
+	int is_archive_recorder = 0;
+	int archive_requested = 0;
+	int can_archive = 0;
+	int delete_after_record = 0;
+	std::string archive_format_path;
 };
 
 RecorderOutput::RecorderOutput(const ConfigBlock &block)
@@ -111,6 +129,25 @@ RecorderOutput::RecorderOutput(const ConfigBlock &block)
 {
 	/* read configuration */
 
+	const char *parentName = block.GetBlockValue("parent", nullptr);
+	if (parentName != nullptr)
+	{
+		is_archive_recorder = 1;
+
+		parent = instance->partitions.front().outputs.FindByName (parentName);
+
+		if (parent)
+		{
+			FormatDebug(recorder_domain, "found parent");
+		}
+		else
+		{
+			throw std::runtime_error("No such output");
+		}
+
+		return;
+	}
+ 
 	path = block.GetPath("path");
 
 	const char *fmt = block.GetBlockValue("format_path", nullptr);
@@ -122,6 +159,16 @@ RecorderOutput::RecorderOutput(const ConfigBlock &block)
 
 	if (!path.IsNull() && fmt != nullptr)
 		throw std::runtime_error("Cannot have both 'path' and 'format_path'");
+
+	const char *archive_fmt = block.GetBlockValue("archive_path", nullptr);
+	if (archive_fmt != nullptr) {
+		archive_format_path = archive_fmt;
+	}
+
+	if (block.GetBlockValue("delete_after_record", nullptr))
+		delete_after_record = 1;
+
+ 	/* initialize encoder */
 }
 
 inline void
@@ -135,6 +182,14 @@ RecorderOutput::EncoderToFile()
 void
 RecorderOutput::Open(AudioFormat &audio_format)
 {
+	if (is_archive_recorder) {
+		FormatDebug(recorder_domain, "Sending Archive Message");
+
+		parent->Signal(0);
+
+		return;
+	}
+
 	/* create the output file */
 
 	if (!HasDynamicPath()) {
@@ -178,6 +233,9 @@ RecorderOutput::Open(AudioFormat &audio_format)
 inline void
 RecorderOutput::Commit()
 {
+	if (is_archive_recorder)
+		return;
+
 	assert(!path.IsNull());
 
 	/* flush the encoder and write the rest to the file */
@@ -190,6 +248,8 @@ RecorderOutput::Commit()
 		throw;
 	}
 
+
+
 	/* now really close everything */
 
 	delete encoder;
@@ -199,6 +259,36 @@ RecorderOutput::Commit()
 	} catch (...) {
 		delete file;
 		throw;
+	}
+
+	/* move file to archive if requested */
+	if (archive_requested && can_archive) {
+		std::string cmd;
+
+		if (delete_after_record)
+			cmd = "mv -- '";
+		else
+			cmd = "cp -- '";
+
+		cmd += path.c_str();
+		cmd += "' '";
+		cmd += archive_path.c_str();
+		cmd += "'&";
+
+		FormatDebug(recorder_domain, "Archiving: \"%s\"", cmd.c_str());
+
+		system (cmd.c_str());
+
+		archive_requested = 0;
+	}
+	else
+	{
+	    /* delete file if requested */
+	    if (delete_after_record) {
+		    FormatDebug(recorder_domain, "Deleting \"%s\"", path.c_str());
+		    
+		    unlink(path.c_str());
+	    }
 	}
 
 	delete file;
@@ -282,9 +372,20 @@ RecorderOutput::ReopenFormat(AllocatedPath &&new_path)
 		    path.ToUTF8().c_str());
 }
 
+inline bool RecorderOutput::Signal(intptr_t sig)
+{
+	(void)sig;
+	archive_requested = 1;
+
+	return true;
+}
+
 void
 RecorderOutput::SendTag(const Tag &tag)
 {
+	if (is_archive_recorder)
+		return;
+
 	if (HasDynamicPath()) {
 		char *p = FormatTag(tag, format_path.c_str());
 		if (p == nullptr || *p == 0) {
@@ -317,6 +418,20 @@ RecorderOutput::SendTag(const Tag &tag)
 				return;
 			}
 		}
+
+		can_archive = 0;
+
+		if (!archive_format_path.empty()) {
+			char *ap = FormatTag(tag, archive_format_path.c_str());
+			AtScopeExit(ap) { free(ap); };
+
+			try {
+				archive_path = ParsePath(ap);
+				can_archive = 1;
+			} catch (const std::runtime_error &e) {
+				LogError(e);
+			}
+		}
 	}
 
 	encoder->PreTag();
@@ -327,6 +442,9 @@ RecorderOutput::SendTag(const Tag &tag)
 size_t
 RecorderOutput::Play(const void *chunk, size_t size)
 {
+	if (is_archive_recorder)
+		return size;
+
 	if (file == nullptr) {
 		/* not currently encoding to a file; discard incoming
 		   data */
