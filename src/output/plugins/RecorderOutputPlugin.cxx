@@ -33,6 +33,8 @@
 #include "Partition.hxx"
 #include "Instance.hxx"
 #include "Main.hxx"
+#include "thread/Thread.hxx"
+#include "thread/Name.hxx"
 
 #include "output/MultipleOutputs.hxx"
 #include "output/State.hxx"
@@ -40,6 +42,7 @@
 
 #include <stdexcept>
 #include <memory>
+#include <fstream>
 
 #include <assert.h>
 #include <stdlib.h>
@@ -114,6 +117,8 @@ private:
 	void FinishFormat();
 	void ReopenFormat(AllocatedPath &&new_path);
 
+	void ArchiveTask();
+
 	/* parent (true) recorder to send archive message to */
 	AudioOutputControl *parent;
 	int is_archive_recorder = 0;
@@ -121,11 +126,15 @@ private:
 	int can_archive = 0;
 	int delete_after_record = 0;
 	std::string archive_format_path;
+	Thread archive_thread;
+	char *archive_source = NULL;
+	char *archive_dest = NULL;
 };
 
 RecorderOutput::RecorderOutput(const ConfigBlock &block)
 	:AudioOutput(0),
-	 prepared_encoder(CreateConfiguredEncoder(block))
+	 prepared_encoder(CreateConfiguredEncoder(block)),
+	 archive_thread(BIND_THIS_METHOD(ArchiveTask))
 {
 	/* read configuration */
 
@@ -249,7 +258,6 @@ RecorderOutput::Commit()
 	}
 
 
-
 	/* now really close everything */
 
 	delete encoder;
@@ -263,21 +271,17 @@ RecorderOutput::Commit()
 
 	/* move file to archive if requested */
 	if (archive_requested && can_archive) {
-		std::string cmd;
 
-		if (delete_after_record)
-			cmd = "mv -- '";
-		else
-			cmd = "cp -- '";
+		// wait for previous move operation to finish
+		if (archive_thread.IsDefined())
+			archive_thread.Join();
 
-		cmd += path.c_str();
-		cmd += "' '";
-		cmd += archive_path.c_str();
-		cmd += "'&";
+		// run move/copy asynchronously to not block output operation
+		//
+		archive_source = strdup(path.c_str());
+		archive_dest = strdup(archive_path.c_str());
 
-		FormatDebug(recorder_domain, "Archiving: \"%s\"", cmd.c_str());
-
-		system (cmd.c_str());
+		archive_thread.Start();
 
 		archive_requested = 0;
 	}
@@ -292,6 +296,49 @@ RecorderOutput::Commit()
 	}
 
 	delete file;
+}
+
+void
+RecorderOutput::ArchiveTask() {
+	int rc;
+
+	SetThreadName("archive_file");
+
+	if (!archive_source || !archive_dest)
+		return;
+
+	if (delete_after_record) {
+		rc = rename (archive_source, archive_dest);
+	} else {
+		try {
+			std::ifstream  src(archive_source, std::ios::binary);
+			std::ofstream  dst(archive_dest,   std::ios::binary);
+
+			dst << src.rdbuf();
+
+			rc = 0;
+		} 
+		catch(...)
+		{
+			rc = -1;
+		}
+	}
+
+	if (rc == 0) {
+		FormatDebug(recorder_domain, "%s \"%s\" to \"%s\"",
+			delete_after_record ? "Moved" : "Copied",
+			archive_source, archive_dest);
+	} else {
+		FormatError(recorder_domain, "Failed to %s \"%s\" to \"%s\", rc=%d",
+			delete_after_record ? "move" : "copy",
+			archive_source, archive_dest, errno);
+	}
+
+
+	free (archive_source);
+	free (archive_dest);
+
+	archive_source = archive_dest = NULL;
 }
 
 void
