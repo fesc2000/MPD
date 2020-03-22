@@ -27,6 +27,7 @@
 #include "util/RuntimeError.hxx"
 #include "Log.hxx"
 #include "open.h"
+#include "mixer/MixerList.hxx"
 
 #include <sys/stat.h>
 #include <errno.h>
@@ -236,5 +237,5 @@ const struct AudioOutputPlugin fifo_output_plugin = {
 	"fifo",
 	nullptr,
 	&FifoOutput::Create,
-	nullptr,
+	&volfile_mixer_plugin,
 };
