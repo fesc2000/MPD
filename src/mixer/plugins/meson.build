@@ -34,6 +34,8 @@ if is_windows
   mixer_plugins_sources += 'WinmmMixerPlugin.cxx'
 endif
 
+mixer_plugins_sources += 'VolfileMixerPlugin.cxx'
+
 mixer_plugins = static_library(
   'mixer_plugins',
   mixer_plugins_sources,

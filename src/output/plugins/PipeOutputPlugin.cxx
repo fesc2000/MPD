@@ -20,6 +20,8 @@
 #include "PipeOutputPlugin.hxx"
 #include "../OutputAPI.hxx"
 #include "system/Error.hxx"
+#include "mixer/MixerList.hxx"
+
 
 #include <string>
 #include <stdexcept>
@@ -78,5 +80,5 @@ const struct AudioOutputPlugin pipe_output_plugin = {
 	"pipe",
 	nullptr,
 	&PipeOutput::Create,
-	nullptr,
+	&volfile_mixer_plugin,
 };
