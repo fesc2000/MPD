@@ -126,6 +126,12 @@ private:
 	Thread archive_thread;
 	std::string archive_source = "";
 	std::string archive_dest = "";
+
+	/**
+	 * hack for old "parent" property.
+	 */
+	const char *parent = nullptr;
+	const char *output_name = nullptr;
 };
 
 RecorderOutput::RecorderOutput(const ConfigBlock &block)
@@ -135,6 +141,12 @@ RecorderOutput::RecorderOutput(const ConfigBlock &block)
 {
 	/* read configuration */
 
+	parent = block.GetBlockValue("parent", nullptr);
+	output_name = block.GetBlockValue("name", nullptr);
+	if (parent != nullptr) {
+		return;
+	}
+ 
 	path = block.GetPath("path");
 
 	const char *fmt = block.GetBlockValue("format_path", nullptr);
@@ -167,6 +179,26 @@ RecorderOutput::EncoderToFile()
 void
 RecorderOutput::Open(AudioFormat &audio_format)
 {
+	if (parent != nullptr) {
+		std::string cmd;
+
+		cmd = "(/usr/local/bin/mpc outputset '";
+		cmd += parent;
+		cmd += "' archive=1; ";
+		if (output_name != nullptr) {
+			cmd += "/usr/local/bin/mpc disable '";
+			cmd += output_name;
+			cmd += "'";
+		}
+		cmd += ")&";
+
+		FormatDebug(recorder_domain, "Archive Cmd: %s", cmd.c_str());
+
+		system (cmd.c_str());
+
+		return;
+	}
+
 	/* create the output file */
 
 	if (!HasDynamicPath()) {
@@ -210,6 +242,9 @@ RecorderOutput::Open(AudioFormat &audio_format)
 inline void
 RecorderOutput::Commit()
 {
+	if (parent != nullptr)
+		return;
+
 	assert(!path.IsNull());
 
 	/* flush the encoder and write the rest to the file */
@@ -305,6 +340,9 @@ RecorderOutput::ArchiveTask() noexcept {
 void
 RecorderOutput::Close() noexcept
 {
+	if (parent != nullptr)
+		return;	
+
 	if (file == nullptr) {
 		/* not currently encoding to a file; nothing needs to
 		   be done now */
@@ -328,6 +366,10 @@ RecorderOutput::Close() noexcept
 void
 RecorderOutput::FinishFormat()
 {
+	if (parent != nullptr) {
+		return;	
+	}
+
 	assert(HasDynamicPath());
 
 	if (file == nullptr)
@@ -383,6 +425,9 @@ RecorderOutput::ReopenFormat(AllocatedPath &&new_path)
 void
 RecorderOutput::SendTag(const Tag &tag)
 {
+	if (parent != nullptr)
+		return;
+
 	if (HasDynamicPath()) {
 		char *p = FormatTag(tag, format_path.c_str());
 		if (p == nullptr || *p == 0) {
@@ -439,6 +484,9 @@ RecorderOutput::SendTag(const Tag &tag)
 size_t
 RecorderOutput::Play(const void *chunk, size_t size)
 {
+	if (parent != nullptr)
+		return size;
+
 	if (file == nullptr) {
 		/* not currently encoding to a file; discard incoming
 		   data */
@@ -457,6 +505,9 @@ RecorderOutput::Play(const void *chunk, size_t size)
 void
 RecorderOutput::SetAttribute(std::string &&name, std::string &&value)
 {
+	if (parent != nullptr)
+		return;
+
 	if (name == "archive") {
 		if (!archive_format_path.empty()) {
 			archive_requested = (std::stoi(value) != 0);
